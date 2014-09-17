@@ -307,6 +307,9 @@ extern void _cdecl GetFileNameSansExtension(LPSTR filename, LPSTR output)
 	}
 }
 
+
+#ifdef TINY
+
 extern "C" char * _cdecl strrev(char *str)
 {
 	if(!str) return 0;
@@ -324,10 +327,10 @@ extern "C" char * _cdecl strrev(char *str)
 
 extern "C" char * _cdecl strdup(const char *str)
 {
-    char *r;
-    if ((r = (char *)malloc(strlen(str) + 1)) == NULL)
+	char *r;
+	if ((r = (char *)malloc(strlen(str) + 1)) == NULL)
 		return 0;
-    return strcpy (r, str);
+	return strcpy (r, str);
 }
 
 extern "C" char * _cdecl _strdup(const char *src)
@@ -338,8 +341,6 @@ extern "C" char * _cdecl _strdup(const char *src)
 extern "C" void __cdecl _wassert(int e)
 {
 }
-
-#ifdef TINY
 
 extern "C" int __cdecl _purecall()
 {

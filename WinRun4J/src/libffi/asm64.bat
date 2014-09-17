@@ -1,7 +1,7 @@
 
 set DIR=%1
 set FILE=%2
-set OUT=%3
+set OUT=%~3
 
 echo dir=%DIR%
 echo file=%FILE%
