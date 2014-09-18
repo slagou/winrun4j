@@ -445,7 +445,7 @@ int Service::Main(int argc, char* argv[])
 	CreateThread(0, 0, (LPTHREAD_START_ROUTINE)ServiceMainThread, args, 0, 0);
 
 	// Need to wait for service thread to attach
-	WaitForSingleObject(g_event, INFINITE);
+	WaitForSingleObject(g_event, 1);
 
 	// Destroy the global ref
 	env->DeleteGlobalRef(args);
