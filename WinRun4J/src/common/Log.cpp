@@ -14,6 +14,7 @@
 #include <io.h>
 #include <iostream>
 #include <fstream>
+#include <ctime>
 #include "../java/VM.h"
 #include "../java/JNI.h"
 
@@ -36,6 +37,10 @@ namespace
 	bool g_error = false;
 	char g_errorText[MAX_PATH];
 	bool g_logToDebugMonitor = true;
+
+	static const char mon_name[][4] = {
+		"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+	};
 }
 
 typedef BOOL (_stdcall *FPTR_AttachConsole) ( DWORD );
@@ -185,18 +190,42 @@ void Log::LogIt(LoggingLevel loggingLevel, const char* marker, const char* forma
 	if(g_logLevel > loggingLevel) return;
 	if(!format) return;
 
+	static const char mon_name[][4] = {
+		"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+		"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+	};
+
+	time_t rawtime;
+	struct tm *timeinfo;
+	time(&rawtime);
+	timeinfo = localtime(&rawtime);
+	char timestamp[40];
+	sprintf(timestamp, "%.3s-%.2d-%.4d %.2d:%.2d:%.2d.000",
+		mon_name[timeinfo->tm_mon],
+		timeinfo->tm_mday,
+		1900 + timeinfo->tm_year,
+		timeinfo->tm_hour,
+		timeinfo->tm_min,
+		timeinfo->tm_sec
+	);
+
 	char tmp[4096];
 	vsprintf(tmp, format, args);
 	if(g_logToDebugMonitor) {
 		char tmp2[4096];
-		sprintf(tmp2, "%s %s\n", marker ? marker : "", tmp);
+		sprintf(tmp2, "%s %s %s\n", timestamp, marker ? marker : "", tmp);
 		OutputDebugString(tmp2);
 	}
+
 	DWORD dwRead;
+	WriteFile(g_logfileHandle, timestamp, strlen(timestamp), &dwRead, NULL);
+	WriteFile(g_logfileHandle, " ", 1, &dwRead, NULL);
 	if(marker) {
 		WriteFile(g_logfileHandle, marker, strlen(marker), &dwRead, NULL);
 		WriteFile(g_logfileHandle, " ", 1, &dwRead, NULL);
 	}
+
+
 	WriteFile(g_logfileHandle, tmp, strlen(tmp), &dwRead, NULL);
 	WriteFile(g_logfileHandle, "\r\n", 2, &dwRead, NULL);
 	FlushFileBuffers(g_logfileHandle);
