@@ -39,7 +39,6 @@ namespace
 #define SERVICE_USER             ":service.user"
 #define SERVICE_PWD              ":service.password"
 #define SERVICE_LOAD_ORDER_GROUP ":service.loadordergroup"
-#define SERVICE_JVM_LOADWAIT_MS	 ":service.jvmloadwaitms"
 
 void WINAPI ServiceCtrlHandler(DWORD opCode)
 {
@@ -446,9 +445,7 @@ int Service::Main(int argc, char* argv[])
 	CreateThread(0, 0, (LPTHREAD_START_ROUTINE)ServiceMainThread, args, 0, 0);
 
 	// Need to wait for service thread to attach
-	DWORD timeoutms = INI::GetInteger(g_ini, NULL, SERVICE_JVM_LOADWAIT_MS, 0);
-	if (timeoutms == 0) { timeoutms = INFINITE; }
-	WaitForSingleObject(g_event, timeoutms);
+	WaitForSingleObject(g_event, 1);
 
 	// Destroy the global ref
 	env->DeleteGlobalRef(args);
