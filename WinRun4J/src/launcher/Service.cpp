@@ -44,10 +44,6 @@ void WINAPI ServiceCtrlHandler(DWORD opCode)
 {
 	Log::Info("ServiceCtrlHandler: %d", opCode);
 
-	if(g_controlMethod == NULL) {
-		Log::Error("JVM Not yet initialized, ignoring service control: %d", opCode);
-	}
-
 	switch(opCode)
 	{
 	case SERVICE_CONTROL_PAUSE:
@@ -93,7 +89,6 @@ int InitServiceClass(dictionary* ini)
 	if(env == NULL) {
 		WinRun4J::StartVM(ini);
 		env = VM::GetJNIEnv();
-
 		if (env == NULL) {
 			Log::Error("JNIEnv is null");
 			return 1;
@@ -389,6 +384,10 @@ int Service::Unregister(dictionary* ini)
 int Service::Control(DWORD opCode)
 {
 	JNIEnv* env = VM::GetJNIEnv();
+	if(env == NULL) {
+		Log::Warning("JVM Not yet initialized, ignoring service control: %d", opCode);
+		return 1;
+	}
 	return env->CallIntMethod(g_serviceInstance, g_controlMethod, (jint) opCode);
 }
 
