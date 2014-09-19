@@ -166,6 +166,7 @@ dictionary* WinRun4J::LoadIniFile(HINSTANCE hInstance)
 
 int WinRun4J::StartVM(dictionary* ini)
 {
+	Log::Info("Starting JVM");
 	bool showErrorPopup = iniparser_getboolean(ini, ERROR_MESSAGES_SHOW_POPUP, 1);
 
 	// Attempt to find an appropriate java VM
@@ -308,9 +309,11 @@ int WinRun4J::ExecuteINI(HINSTANCE hInstance, dictionary* ini)
 	WinRun4J::SetProcessPriority(ini);
 
 	// Start vm
-	result = WinRun4J::StartVM(ini);
-	if(result) {
-		return result;
+	if(!serviceMode) {
+		result = WinRun4J::StartVM(ini);
+		if(result) {
+			return result;
+		}
 	}
 
 	JNIEnv* env = VM::GetJNIEnv();

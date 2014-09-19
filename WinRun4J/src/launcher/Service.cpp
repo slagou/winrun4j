@@ -91,8 +91,13 @@ int InitServiceClass(dictionary* ini)
 	// Initialise JNI members
 	JNIEnv* env = VM::GetJNIEnv();
 	if(env == NULL) {
-		Log::Error("JNIEnv is null");
-		return 1;
+		WinRun4J::StartVM(ini);
+		env = VM::GetJNIEnv();
+
+		if (env == NULL) {
+			Log::Error("JNIEnv is null");
+			return 1;
+		}
 	}
 
 	char* svcClass = iniparser_getstr(ini, SERVICE_CLASS);
@@ -149,8 +154,8 @@ void WINAPI ServiceStart(DWORD argc, LPTSTR *argv)
 		return;
 	}
 
-	InitServiceClass(g_ini);
-	if(g_mainMethod == NULL) {
+	
+	if(InitServiceClass(g_ini) != 0) {
 		return;
 	}
 
