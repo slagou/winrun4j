@@ -42,9 +42,11 @@ namespace
 
 void WINAPI ServiceCtrlHandler(DWORD opCode)
 {
-	int result;
-
 	Log::Info("ServiceCtrlHandler: %d", opCode);
+
+	if(g_controlMethod == NULL) {
+		Log::Error("JVM Not yet initialized, ignoring service control: %d", opCode);
+	}
 
 	switch(opCode)
 	{
@@ -84,6 +86,52 @@ void WINAPI ServiceCtrlHandler(DWORD opCode)
 	}
 }
 
+int InitServiceClass(dictionary* ini)
+{
+	// Initialise JNI members
+	JNIEnv* env = VM::GetJNIEnv();
+	if(env == NULL) {
+		Log::Error("JNIEnv is null");
+		return 1;
+	}
+
+	char* svcClass = iniparser_getstr(ini, SERVICE_CLASS);
+	StrReplace(svcClass, '.', '/');
+	g_serviceClass = JNI::FindClass(env, svcClass);
+	if(g_serviceClass == NULL) {
+		Log::Error("Could not find service class");
+		return 1;
+	}
+
+	jmethodID scon = env->GetMethodID(g_serviceClass, "<init>", "()V");
+	if(scon == NULL) {
+		Log::Error("Could not find service class default constructor");
+		return 1;
+	}
+
+	g_serviceInstance = env->NewObject(g_serviceClass, scon);
+	if(g_serviceInstance == NULL) {
+		Log::Error("Could not create service class");
+		return 1;
+	}
+	// Need a global reference here to as we transfer across threads
+	g_serviceInstance = env->NewGlobalRef(g_serviceInstance);
+
+	g_controlMethod = env->GetMethodID(g_serviceClass, "serviceRequest", "(I)I");
+	if(g_controlMethod == NULL) {
+		Log::Error("Could not find control method class");
+		return 1;
+	}
+
+	g_mainMethod = env->GetMethodID(g_serviceClass, "serviceMain", "([Ljava/lang/String;)I");
+	if(g_mainMethod == NULL) {
+		Log::Error("Could not find control main class");
+		return 1;
+	}
+
+	return 0;
+}
+
 void WINAPI ServiceStart(DWORD argc, LPTSTR *argv)
 {
 	g_serviceStatus.dwServiceType = SERVICE_WIN32;
@@ -98,6 +146,11 @@ void WINAPI ServiceStart(DWORD argc, LPTSTR *argv)
 
 	if(g_serviceStatusHandle == (SERVICE_STATUS_HANDLE)0) {
 		Log::Error("Error registering service control handler: %d", GetLastError());
+		return;
+	}
+
+	InitServiceClass(g_ini);
+	if(g_mainMethod == NULL) {
 		return;
 	}
 
@@ -153,47 +206,6 @@ int Service::Initialise(dictionary* ini)
 		}
 	} else {
 		g_controlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
-	}
-
-	// Initialise JNI members
-	JNIEnv* env = VM::GetJNIEnv();
-	if(env == NULL) {
-		Log::Error("JNIEnv is null");
-		return 1;
-	}
-
-	char* svcClass = iniparser_getstr(ini, SERVICE_CLASS);
-	StrReplace(svcClass, '.', '/');
-	g_serviceClass = JNI::FindClass(env, svcClass);
-	if(g_serviceClass == NULL) {
-		Log::Error("Could not find service class");
-		return 1;
-	}
-
-	jmethodID scon = env->GetMethodID(g_serviceClass, "<init>", "()V");
-	if(scon == NULL) {
-		Log::Error("Could not find service class default constructor");
-		return 1;
-	}
-
-	g_serviceInstance = env->NewObject(g_serviceClass, scon);
-	if(g_serviceInstance == NULL) {
-		Log::Error("Could not create service class");
-		return 1;
-	}
-	// Need a global reference here to as we transfer across threads
-	g_serviceInstance = env->NewGlobalRef(g_serviceInstance);
-
-	g_controlMethod = env->GetMethodID(g_serviceClass, "serviceRequest", "(I)I");
-	if(g_controlMethod == NULL) {
-		Log::Error("Could not find control method class");
-		return 1;
-	}
-
-	g_mainMethod = env->GetMethodID(g_serviceClass, "serviceMain", "([Ljava/lang/String;)I");
-	if(g_mainMethod == NULL) {
-		Log::Error("Could not find control main class");
-		return 1;
 	}
 
 	return 0;
@@ -445,7 +457,7 @@ int Service::Main(int argc, char* argv[])
 	CreateThread(0, 0, (LPTHREAD_START_ROUTINE)ServiceMainThread, args, 0, 0);
 
 	// Need to wait for service thread to attach
-	WaitForSingleObject(g_event, 1);
+	WaitForSingleObject(g_event, INFINITE);
 
 	// Destroy the global ref
 	env->DeleteGlobalRef(args);

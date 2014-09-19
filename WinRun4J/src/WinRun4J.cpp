@@ -292,15 +292,23 @@ int WinRun4J::ExecuteINI(HINSTANCE hInstance, dictionary* ini)
 	// Set the current working directory if specified
 	WinRun4J::SetWorkingDirectory(ini, defaultToIniDir);
 
+	int result = 0;
+	// Pull out the command line args (plus any existing INI args)
+	TCHAR *argv[MAX_PATH];
+	UINT argc = 0;
+	INI::GetNumberedKeysFromIni(ini, ":arg", argv, argc);
+
 	// Display the splash screen if present (only for main mode)
 	if(!serviceMode)
 		SplashScreen::ShowSplashImage(hInstance, ini);
+	else
+		result = Service::Run(hInstance, ini, argc, argv);
 
 	// Check for process priority setting
 	WinRun4J::SetProcessPriority(ini);
 
 	// Start vm
-	int result = WinRun4J::StartVM(ini);
+	result = WinRun4J::StartVM(ini);
 	if(result) {
 		return result;
 	}
@@ -322,15 +330,8 @@ int WinRun4J::ExecuteINI(HINSTANCE hInstance, dictionary* ini)
 		SetConsoleTitle(title); 
 #endif 
 
-	// Pull out the command line args (plus any existing INI args)
-	TCHAR *argv[MAX_PATH];
-	UINT argc = 0;
-	INI::GetNumberedKeysFromIni(ini, ":arg", argv, argc);
-
 	// Run the main class (or service class)
-	if(serviceMode)
-		result = Service::Run(hInstance, ini, argc, argv);
-	else
+	if(!serviceMode)
 		result = JNI::RunMainClass(env, mainCls, argc, argv);
 	
 	// Check for exception - if not a service
