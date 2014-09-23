@@ -20,14 +20,12 @@ namespace
 	dictionary* g_ini = 0;
 	char* g_serviceId = 0;
 	int g_controlsAccepted = 0;
-	int g_returnCode = 0;
 	SERVICE_STATUS g_serviceStatus;
 	SERVICE_STATUS_HANDLE g_serviceStatusHandle;
 	jclass g_serviceClass;
 	jobject g_serviceInstance;
 	jmethodID g_controlMethod;
 	jmethodID g_mainMethod;
-	HANDLE g_event;
 
 	int g_argc;
 	char** g_argv;
@@ -128,21 +126,6 @@ int InitServiceClass(dictionary* ini)
 
 void WINAPI ServiceStart(DWORD argc, LPTSTR *argv)
 {
-	g_serviceStatus.dwServiceType = SERVICE_WIN32;
-	g_serviceStatus.dwCurrentState = SERVICE_START_PENDING;
-	g_serviceStatus.dwControlsAccepted = g_controlsAccepted;
-	g_serviceStatus.dwWin32ExitCode = 0;
-	g_serviceStatus.dwServiceSpecificExitCode = 0;
-	g_serviceStatus.dwWaitHint = 0;
-
-	// Register the service
-	g_serviceStatusHandle = RegisterServiceCtrlHandler(g_serviceId, ServiceCtrlHandler);
-
-	if (g_serviceStatusHandle == (SERVICE_STATUS_HANDLE) 0) {
-		Log::Error("Error registering service control handler: %d", GetLastError());
-		return;
-	}
-
 	Service::Main(argc, argv);
 }
 
@@ -232,6 +215,8 @@ int Service::Control(DWORD opCode)
 
 DWORD ServiceMainThread(LPVOID lpParam)
 {
+	Log::Info("Service Main Thread Started");
+
 	if (InitServiceClass(g_ini) != 0) {
 		return -1;
 	}
@@ -258,9 +243,6 @@ DWORD ServiceMainThread(LPVOID lpParam)
 		env->SetObjectArrayElement(args, progargsCount+i, env->NewStringUTF(g_argv[i+1]));
 	}
 
-	// Create a global ref so its not lost as we pass it across threads
-	args = (jobjectArray) env->NewGlobalRef(args);
-
 	Log::Info("Service startup initiated with %d INI args and %d Ctrl Manager args", progargsCount, g_argc-1);
 
 	// Set context classloader as some libraries expect this to be set
@@ -270,25 +252,26 @@ DWORD ServiceMainThread(LPVOID lpParam)
 	g_serviceStatus.dwCurrentState = SERVICE_RUNNING;
 	SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
 
-	// Now signal launcher thread
-	SetEvent(g_event);
+	Log::Info("Service Main Method Starting");
 
-	Log::Info("Service Main method starting...");
+	int retCode = env->CallIntMethod(g_serviceInstance, g_mainMethod, args);
 
-	g_returnCode = env->CallIntMethod(g_serviceInstance, g_mainMethod, args);
-
-	Log::Info("Service Main method completed...");
+	Log::Info("Service Main Method Completed");
 
 	VM::DetachCurrentThread();
+
+	Log::Info("Service Main Thread Detached");
 
 	// When the service main completes we assume the service wants to stop
 	// so wait for the VM is tidy up (all non-daemon threads complete etc..)
 	VM::CleanupVM();
 
+	Log::Info("Service VM Cleaned up");
+
 	g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
 	SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
 
-	return g_returnCode;
+	return retCode;
 }
 
 int Service::Main(int argc, char* argv[])
@@ -296,14 +279,26 @@ int Service::Main(int argc, char* argv[])
 	g_argc = argc;
 	g_argv = argv;
 
-	// Create the event
-	g_event = CreateEvent(0, TRUE, FALSE, 0);
+	// Let the Service Control Manager know that we're now started as a service, but in a PENDING state
+	g_serviceStatus.dwServiceType = SERVICE_WIN32;
+	g_serviceStatus.dwCurrentState = SERVICE_START_PENDING;
+	g_serviceStatus.dwControlsAccepted = g_controlsAccepted;
+	g_serviceStatus.dwWin32ExitCode = 0;
+	g_serviceStatus.dwServiceSpecificExitCode = 0;
+	g_serviceStatus.dwWaitHint = 0;
+
+	// Register the service control handler for responding to control messages
+	g_serviceStatusHandle = RegisterServiceCtrlHandler(g_serviceId, ServiceCtrlHandler);
+	if (g_serviceStatusHandle == (SERVICE_STATUS_HANDLE) 0) {
+		Log::Error("Error registering service control handler: %d", GetLastError());
+		return 1;
+	}
 
 	// This is the main thread for the java service
-	CreateThread(0, 0, (LPTHREAD_START_ROUTINE)ServiceMainThread, &argc, 0, 0);
+	CreateThread(0, 0, (LPTHREAD_START_ROUTINE) ServiceMainThread, &argc, 0, 0);
 
-	// Need to wait for service thread to attach
-	WaitForSingleObject(g_event, INFINITE);
+	// Since we set our service status as PENDING, we can return here without having to wait for anything.
+	// The Service Control Manager will wait until our service's status is set to RUNNING.
 
 	return 0;
 }
