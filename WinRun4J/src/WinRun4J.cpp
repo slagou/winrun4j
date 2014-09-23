@@ -36,6 +36,7 @@ namespace
 	UINT progargsCount = 0;
 	UINT progargsOffset = 0;
 	bool workingDirectorySet = false;
+	bool g_ddeInit = false;
 }
 
 void WinRun4J::SetWorkingDirectory(dictionary* ini, bool defaultToIniDir)
@@ -273,6 +274,25 @@ void WinRun4J::ProcessCommandLineArgs(dictionary* ini)
 	}
 }
 
+JNIEnv* WinRun4J::InitializeJVM(HINSTANCE hInstance, dictionary* ini)
+{
+	int result = WinRun4J::StartVM(ini);
+	if(result != 0) {
+		return NULL;
+	}
+
+	JNIEnv* env = VM::GetJNIEnv(false);
+	// Register native methods
+	JNI::Init(env);
+	if(!iniparser_getboolean(ini, DISABLE_NATIVE_METHODS, 0))
+		Native::RegisterNatives(env);
+
+	// Startup DDE if requested
+	g_ddeInit = DDE::Initialize(hInstance, env, ini);
+
+	return env;
+}
+
 int WinRun4J::ExecuteINI(HINSTANCE hInstance, dictionary* ini)
 {
 	// Merge in command line args and overrides
@@ -293,6 +313,9 @@ int WinRun4J::ExecuteINI(HINSTANCE hInstance, dictionary* ini)
 	// Set the current working directory if specified
 	WinRun4J::SetWorkingDirectory(ini, defaultToIniDir);
 
+	// Check for process priority setting
+	WinRun4J::SetProcessPriority(ini);
+
 	int result = 0;
 	// Pull out the command line args (plus any existing INI args)
 	TCHAR *argv[MAX_PATH];
@@ -305,26 +328,10 @@ int WinRun4J::ExecuteINI(HINSTANCE hInstance, dictionary* ini)
 	else
 		result = Service::Run(hInstance, ini, argc, argv);
 
-	// Check for process priority setting
-	WinRun4J::SetProcessPriority(ini);
-
-	// Start vm
-	if(!serviceMode) {
-		result = WinRun4J::StartVM(ini);
-		if(result) {
-			return result;
-		}
+	JNIEnv* env;
+	if (!serviceMode) {
+		env = WinRun4J::InitializeJVM(hInstance, ini);
 	}
-
-	JNIEnv* env = VM::GetJNIEnv();
-
-	// Register native methods
-	JNI::Init(env);
-	if(!iniparser_getboolean(ini, DISABLE_NATIVE_METHODS, 0))
-		Native::RegisterNatives(env);
-
-	// Startup DDE if requested
-	bool ddeInit = DDE::Initialize(hInstance, env, ini);
 
 	// Set console title if required (and console mode)
 #ifdef CONSOLE 
@@ -341,7 +348,7 @@ int WinRun4J::ExecuteINI(HINSTANCE hInstance, dictionary* ini)
 	if(serviceCls == NULL)
 		JNI::PrintStackTrace(env);
 
-	if (ddeInit) DDE::Ready();
+	if (g_ddeInit) DDE::Ready();
 	
 	// Free the args memory
 	WinRun4J::FreeArgs();
@@ -353,7 +360,7 @@ int WinRun4J::ExecuteINI(HINSTANCE hInstance, dictionary* ini)
 	Log::Close();
 
 	// Unitialize DDE
-	if(ddeInit) DDE::Uninitialize();
+	if(g_ddeInit) DDE::Uninitialize();
 
 	return result;
 }

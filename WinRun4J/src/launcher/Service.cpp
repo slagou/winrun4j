@@ -28,6 +28,9 @@ namespace
 	jmethodID g_controlMethod;
 	jmethodID g_mainMethod;
 	HANDLE g_event;
+
+	int g_argc;
+	char** g_argv;
 }
 
 #define SERVICE_ID               ":service.id"
@@ -84,16 +87,7 @@ void WINAPI ServiceCtrlHandler(DWORD opCode)
 
 int InitServiceClass(dictionary* ini)
 {
-	// Initialise JNI members
-	JNIEnv* env = VM::GetJNIEnv();
-	if(env == NULL) {
-		WinRun4J::StartVM(ini);
-		env = VM::GetJNIEnv();
-		if (env == NULL) {
-			Log::Error("JNIEnv is null");
-			return 1;
-		}
-	}
+	JNIEnv* env = WinRun4J::InitializeJVM(NULL, ini);
 
 	char* svcClass = iniparser_getstr(ini, SERVICE_CLASS);
 	StrReplace(svcClass, '.', '/');
@@ -144,13 +138,8 @@ void WINAPI ServiceStart(DWORD argc, LPTSTR *argv)
 	// Register the service
 	g_serviceStatusHandle = RegisterServiceCtrlHandler(g_serviceId, ServiceCtrlHandler);
 
-	if(g_serviceStatusHandle == (SERVICE_STATUS_HANDLE)0) {
+	if (g_serviceStatusHandle == (SERVICE_STATUS_HANDLE) 0) {
 		Log::Error("Error registering service control handler: %d", GetLastError());
-		return;
-	}
-
-	
-	if(InitServiceClass(g_ini) != 0) {
 		return;
 	}
 
@@ -229,6 +218,108 @@ int Service::Run(HINSTANCE hInstance, dictionary* ini, int argc, char* argv[])
 	}
 
 	return 0;
+}
+
+int Service::Control(DWORD opCode)
+{
+	JNIEnv* env = VM::GetJNIEnv();
+	if(env == NULL) {
+		Log::Warning("JVM Not yet initialized, ignoring service control: %d", opCode);
+		return 1;
+	}
+	return env->CallIntMethod(g_serviceInstance, g_controlMethod, (jint) opCode);
+}
+
+DWORD ServiceMainThread(LPVOID lpParam)
+{
+	if (InitServiceClass(g_ini) != 0) {
+		return -1;
+	}
+
+	JNIEnv* env = VM::GetJNIEnv(false);
+
+	// Grab any config args
+	TCHAR *progargs[MAX_PATH];
+	UINT progargsCount = 0;
+	INI::GetNumberedKeysFromIni(g_ini, PROG_ARG, progargs, progargsCount);
+
+	// Create the run args
+	jclass stringClass = env->FindClass("java/lang/String");
+	jobjectArray args = env->NewObjectArray(g_argc + progargsCount - 1, stringClass, NULL);
+
+	// Add the config args
+	for(UINT i = 0; i < progargsCount; i++) {
+		env->SetObjectArrayElement(args, i, env->NewStringUTF(progargs[i]));
+	}
+
+	// Add in the passed in args from service control manager 
+	//  (skip the first arg as its the name of the service)
+	for(UINT i = 0; i < g_argc - 1; i++) {
+		env->SetObjectArrayElement(args, progargsCount+i, env->NewStringUTF(g_argv[i+1]));
+	}
+
+	// Create a global ref so its not lost as we pass it across threads
+	args = (jobjectArray) env->NewGlobalRef(args);
+
+	Log::Info("Service startup initiated with %d INI args and %d Ctrl Manager args", progargsCount, g_argc-1);
+
+	// Set context classloader as some libraries expect this to be set
+	JNI::SetContextClassLoader(env, g_serviceInstance);
+
+	// Set to running before creating thread to avoid race conditions
+	g_serviceStatus.dwCurrentState = SERVICE_RUNNING;
+	SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+
+	// Now signal launcher thread
+	SetEvent(g_event);
+
+	Log::Info("Service Main method starting...");
+
+	g_returnCode = env->CallIntMethod(g_serviceInstance, g_mainMethod, args);
+
+	Log::Info("Service Main method completed...");
+
+	VM::DetachCurrentThread();
+
+	// When the service main completes we assume the service wants to stop
+	// so wait for the VM is tidy up (all non-daemon threads complete etc..)
+	VM::CleanupVM();
+
+	g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
+	SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+
+	return g_returnCode;
+}
+
+int Service::Main(int argc, char* argv[])
+{
+	g_argc = argc;
+	g_argv = argv;
+
+	// Create the event
+	g_event = CreateEvent(0, TRUE, FALSE, 0);
+
+	// This is the main thread for the java service
+	CreateThread(0, 0, (LPTHREAD_START_ROUTINE)ServiceMainThread, &argc, 0, 0);
+
+	// Need to wait for service thread to attach
+	WaitForSingleObject(g_event, INFINITE);
+
+	return 0;
+}
+
+void Service::Shutdown(int exitCode)
+{
+	if(g_serviceId != 0) {
+		g_serviceStatus.dwWin32ExitCode = exitCode;
+		g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
+		g_serviceStatus.dwCheckPoint = 0;
+		g_serviceStatus.dwWaitHint = 0;
+		
+		if(!SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus)) {
+			Log::Error("Error in SetServiceStatus: 0x%x", GetLastError());
+		}
+	}
 }
 
 // We expect the commandline to be "--WinRun4J:RegisterService"
@@ -379,111 +470,6 @@ int Service::Unregister(dictionary* ini)
 	}
 
 	return DeleteService(s) == 0;
-}
-
-int Service::Control(DWORD opCode)
-{
-	JNIEnv* env = VM::GetJNIEnv();
-	if(env == NULL) {
-		Log::Warning("JVM Not yet initialized, ignoring service control: %d", opCode);
-		return 1;
-	}
-	return env->CallIntMethod(g_serviceInstance, g_controlMethod, (jint) opCode);
-}
-
-DWORD ServiceMainThread(LPVOID lpParam)
-{
-	JNIEnv* env = VM::GetJNIEnv(false);
-
-	// Set context classloader as some libraries expect this to be set
-	JNI::SetContextClassLoader(env, g_serviceInstance);
-
-	// Need another global ref here
-	jobject args = env->NewGlobalRef((jobject) lpParam);
-
-	// Now signal launcher thread
-	SetEvent(g_event);
-
-	Log::Info("Service method starting...");
-
-	g_returnCode = env->CallIntMethod(g_serviceInstance, g_mainMethod, args);
-
-	Log::Info("Service method completed...");
-	VM::DetachCurrentThread();
-
-	// When the service main completes we assume the service wants to stop
-	// so wait for the VM is tidy up (all non-daemon threads complete etc..)
-	VM::CleanupVM();
-
-	g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
-	SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
-
-	return g_returnCode;
-}
-
-int Service::Main(int argc, char* argv[])
-{
-	JNIEnv* env = VM::GetJNIEnv();
-
-	// Grab any config args
-	TCHAR *progargs[MAX_PATH];
-	UINT progargsCount = 0;
-	INI::GetNumberedKeysFromIni(g_ini, PROG_ARG, progargs, progargsCount);
-
-	// Create the run args
-	jclass stringClass = env->FindClass("java/lang/String");
-	jobjectArray args = env->NewObjectArray(argc + progargsCount - 1, stringClass, NULL);
-
-	// Add the config args
-	for(UINT i = 0; i < progargsCount; i++) {
-		env->SetObjectArrayElement(args, i, env->NewStringUTF(progargs[i]));
-	}
-
-	// Add in the passed in args from service control manager 
-	//  (skip the first arg as its the name of the service)
-	for(UINT i = 0; i < argc - 1; i++) {
-		env->SetObjectArrayElement(args, progargsCount+i, env->NewStringUTF(argv[i+1]));
-	}
-
-	// Create a global ref so its not lost as we pass it across threads
-	args = (jobjectArray) env->NewGlobalRef(args);
-
-	Log::Info("Service startup initiated with %d INI args and %d Ctrl Manager args", progargsCount, argc-1);
-
-	// Create the event
-	g_event = CreateEvent(0, TRUE, FALSE, 0);
-
-	// Set to running before creating thread to avoid race conditions
-	g_serviceStatus.dwCurrentState = SERVICE_RUNNING;
-	SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
-
-	// This is the main thread for the java service
-	CreateThread(0, 0, (LPTHREAD_START_ROUTINE)ServiceMainThread, args, 0, 0);
-
-	// Need to wait for service thread to attach
-	WaitForSingleObject(g_event, INFINITE);
-
-	// Destroy the global ref
-	env->DeleteGlobalRef(args);
-
-	// Detach this thread so it doesn't block
-	VM::DetachCurrentThread();
-
-	return 0;
-}
-
-void Service::Shutdown(int exitCode)
-{
-	if(g_serviceId != 0) {
-		g_serviceStatus.dwWin32ExitCode = exitCode;
-		g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
-		g_serviceStatus.dwCheckPoint = 0;
-		g_serviceStatus.dwWaitHint = 0;
-		
-		if(!SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus)) {
-			Log::Error("Error in SetServiceStatus: 0x%x", GetLastError());
-		}
-	}
 }
 
 extern "C" __declspec(dllexport) BOOL __cdecl Service_SetStatus(DWORD dwCurrentState, DWORD dwWaitHint)

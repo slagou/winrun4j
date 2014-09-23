@@ -37,6 +37,8 @@ public:
 	static void FreeArgs();
 	static int ExecuteINI(HINSTANCE hInstance);
 	static int ExecuteINI(HINSTANCE hInstance, dictionary* ini);
+
+	static JNIEnv* InitializeJVM(HINSTANCE hInstance, dictionary* ini);
 };
 
 #endif // WINRUN4J_H
