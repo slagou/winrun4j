@@ -26,9 +26,7 @@ namespace
 	jobject g_serviceInstance;
 	jmethodID g_controlMethod;
 	jmethodID g_mainMethod;
-
-	int g_argc;
-	char** g_argv;
+	HANDLE g_serviceJvmLoadedEvent;
 }
 
 #define SERVICE_ID               ":service.id"
@@ -221,6 +219,8 @@ DWORD ServiceMainThread(LPVOID lpParam)
 		return -1;
 	}
 
+	ServiceStartThreadParams *params = (ServiceStartThreadParams*) lpParam;
+
 	JNIEnv* env = VM::GetJNIEnv(false);
 
 	// Grab any config args
@@ -230,7 +230,7 @@ DWORD ServiceMainThread(LPVOID lpParam)
 
 	// Create the run args
 	jclass stringClass = env->FindClass("java/lang/String");
-	jobjectArray args = env->NewObjectArray(g_argc + progargsCount - 1, stringClass, NULL);
+	jobjectArray args = env->NewObjectArray(params->argc + progargsCount - 1, stringClass, NULL);
 
 	// Add the config args
 	for(UINT i = 0; i < progargsCount; i++) {
@@ -239,14 +239,19 @@ DWORD ServiceMainThread(LPVOID lpParam)
 
 	// Add in the passed in args from service control manager 
 	//  (skip the first arg as its the name of the service)
-	for(UINT i = 0; i < g_argc - 1; i++) {
-		env->SetObjectArrayElement(args, progargsCount+i, env->NewStringUTF(g_argv[i+1]));
+	for(UINT i = 0; i < params->argc - 1; i++) {
+		env->SetObjectArrayElement(args, progargsCount+i, env->NewStringUTF(params->argv[i+1]));
 	}
 
-	Log::Info("Service startup initiated with %d INI args and %d Ctrl Manager args", progargsCount, g_argc-1);
+	Log::Info("Service startup initiated with %d INI args and %d Ctrl Manager args", progargsCount, params->argc-1);
 
 	// Set context classloader as some libraries expect this to be set
 	JNI::SetContextClassLoader(env, g_serviceInstance);
+
+	// Notify main thread that the JVM is loaded and it should grab a reference of the service instance on its own thread
+	SetEvent(g_serviceJvmLoadedEvent);
+
+	// DANGER! Do not use the lpParam/params after this SetEvent!
 
 	// Set to running before creating thread to avoid race conditions
 	g_serviceStatus.dwCurrentState = SERVICE_RUNNING;
@@ -276,9 +281,6 @@ DWORD ServiceMainThread(LPVOID lpParam)
 
 int Service::Main(int argc, char* argv[])
 {
-	g_argc = argc;
-	g_argv = argv;
-
 	// Let the Service Control Manager know that we're now started as a service, but in a PENDING state
 	g_serviceStatus.dwServiceType = SERVICE_WIN32;
 	g_serviceStatus.dwCurrentState = SERVICE_START_PENDING;
@@ -294,8 +296,25 @@ int Service::Main(int argc, char* argv[])
 		return 1;
 	}
 
+	g_serviceJvmLoadedEvent = CreateEvent(0, TRUE, FALSE, 0);
+
+	// DANGER! These params will be lost when this method goes out of scope!
+	// But that's OK here because the ServiceMainThread is done using the params when it notifies the g_serviceJvmLoadedEvent
+	ServiceStartThreadParams params;
+	params.argc = argc;
+	params.argv = argv;
+
 	// This is the main thread for the java service
-	CreateThread(0, 0, (LPTHREAD_START_ROUTINE) ServiceMainThread, &argc, 0, 0);
+	CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) ServiceMainThread, &params, 0, NULL);
+
+	// Block until the JVM is loaded and an instance of our service class is instantiated
+	// The ServiceMainThread should also no longer reference the ServiceStartThreadParams at this point
+	WaitForSingleObject(g_serviceJvmLoadedEvent, INFINITE);
+
+	// Keep a reference to the service instance on _this_ thread
+	// I guess this prevents the service instance from being garbage collected causing all threads to be killed off?
+	JNIEnv* env = VM::GetJNIEnv(false);
+	env->NewGlobalRef(g_serviceInstance);
 
 	// Since we set our service status as PENDING, we can return here without having to wait for anything.
 	// The Service Control Manager will wait until our service's status is set to RUNNING.
