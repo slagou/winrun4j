@@ -14,6 +14,7 @@
 #include <io.h>
 #include <iostream>
 #include <fstream>
+#include <ctime>
 #include "../java/VM.h"
 #include "../java/JNI.h"
 
@@ -36,16 +37,22 @@ namespace
 	bool g_error = false;
 	char g_errorText[MAX_PATH];
 	bool g_logToDebugMonitor = true;
+	bool g_logLinePrefixTimestamp = false;
+
+	static const char mon_name[][4] = {
+		"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+	};
 }
 
 typedef BOOL (_stdcall *FPTR_AttachConsole) ( DWORD );
 
-#define LOG_OVERWRITE_OPTION ":log.overwrite"
-#define LOG_FILE_AND_CONSOLE ":log.file.and.console"
-#define LOG_ROLL_SIZE ":log.roll.size"
-#define LOG_ROLL_PREFIX ":log.roll.prefix"
-#define LOG_ROLL_SUFFIX ":log.roll.suffix"
-#define LOG_OUTPUT_DEBUG_MONITOR ":log.output.debug.monitor"
+#define LOG_OVERWRITE_OPTION		":log.overwrite"
+#define LOG_FILE_AND_CONSOLE		":log.file.and.console"
+#define LOG_ROLL_SIZE				":log.roll.size"
+#define LOG_ROLL_PREFIX				":log.roll.prefix"
+#define LOG_ROLL_SUFFIX				":log.roll.suffix"
+#define LOG_OUTPUT_DEBUG_MONITOR	":log.output.debug.monitor"
+#define LOG_LINE_PREFIX_TIMESTAMP	":log.line.prefix.timestamp"
 
 void Log::Init(HINSTANCE hInstance, const char* logfile, const char* loglevel, dictionary* ini)
 {
@@ -67,6 +74,9 @@ void Log::Init(HINSTANCE hInstance, const char* logfile, const char* loglevel, d
 		g_logLevel = info;
 		Warning("log.level unrecognized");
 	}
+
+	// Flag to indicate whether the timestamp should be prefixed to each log line
+	g_logLinePrefixTimestamp = (ini != NULL && iniparser_getboolean(ini, LOG_LINE_PREFIX_TIMESTAMP, 0));
 
 	// Flag to indicate if we want to log to the debug monitor - useful for services
 	g_logToDebugMonitor = (ini == NULL || iniparser_getboolean(ini, LOG_OUTPUT_DEBUG_MONITOR, 0));
@@ -185,24 +195,52 @@ void Log::LogIt(LoggingLevel loggingLevel, const char* marker, const char* forma
 	if(g_logLevel > loggingLevel) return;
 	if(!format) return;
 
+	time_t rawtime;
+	struct tm *timeinfo;
+	time(&rawtime);
+	timeinfo = localtime(&rawtime);
+	char timestamp[40];
+	sprintf(timestamp, "%.3s-%.2d-%.4d %.2d:%.2d:%.2d.000",
+		mon_name[timeinfo->tm_mon],
+		timeinfo->tm_mday,
+		1900 + timeinfo->tm_year,
+		timeinfo->tm_hour,
+		timeinfo->tm_min,
+		timeinfo->tm_sec
+	);
+
 	char tmp[4096];
 	vsprintf(tmp, format, args);
 	if(g_logToDebugMonitor) {
 		char tmp2[4096];
-		sprintf(tmp2, "%s %s\n", marker ? marker : "", tmp);
+		if(g_logLinePrefixTimestamp)
+			sprintf(tmp2, "%s %s %s\n", timestamp, marker ? marker : "", tmp);
+		else
+			sprintf(tmp2, "%s %s\n", marker ? marker : "", tmp);
 		OutputDebugString(tmp2);
 	}
+
 	DWORD dwRead;
+	if(g_logLinePrefixTimestamp) {
+		WriteFile(g_logfileHandle, timestamp, strlen(timestamp), &dwRead, NULL);
+		WriteFile(g_logfileHandle, " ", 1, &dwRead, NULL);
+	}
+
 	if(marker) {
 		WriteFile(g_logfileHandle, marker, strlen(marker), &dwRead, NULL);
 		WriteFile(g_logfileHandle, " ", 1, &dwRead, NULL);
 	}
+
 	WriteFile(g_logfileHandle, tmp, strlen(tmp), &dwRead, NULL);
 	WriteFile(g_logfileHandle, "\r\n", 2, &dwRead, NULL);
 	FlushFileBuffers(g_logfileHandle);
 
 	// Check if we also log to console if we have a log file
 	if(g_haveLogFile && g_logFileAndConsole) {
+		if(g_logLinePrefixTimestamp) {
+			WriteFile(g_stdHandle, timestamp, strlen(timestamp), &dwRead, NULL);
+			WriteFile(g_stdHandle, " ", 1, &dwRead, NULL);
+		}
 		if(marker) {
 			WriteFile(g_stdHandle, marker, strlen(marker), &dwRead, NULL);
 			WriteFile(g_stdHandle, " ", 1, &dwRead, NULL);

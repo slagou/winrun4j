@@ -30,4 +30,9 @@ private:
 	static int Initialise(dictionary* ini);
 };
 
+struct ServiceStartThreadParams {
+	int argc;
+	char** argv;
+};
+
 #endif // SERVICE_H
